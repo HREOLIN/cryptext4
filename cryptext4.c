@@ -94,14 +94,14 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
     sbi->sb = sb;
 
     /* Read superblock from disk (usually at block 1, offset 1024) */
-    bh = sb_bread(sb, 1);
+    bh = sb_bread(sb, 0);
     if (!bh) {
         pr_err("cryptext4: failed to read superblock\n");
         kfree(sbi);
         return -EIO;
     }
 
-    disk_sb = (struct cryptext4_super_block *)bh->b_data;
+    disk_sb = (struct cryptext4_super_block *)(bh->b_data + CRYPTEXT4_SB_OFFSET);
 
     if (le32_to_cpu(disk_sb->s_magic) != CRYPTEXT4_MAGIC) {
         pr_err("cryptext4: invalid magic number (not a cryptext4 fs)\n");

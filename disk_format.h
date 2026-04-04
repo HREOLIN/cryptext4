@@ -22,6 +22,8 @@
 #define CRYPTEXT4_MAGIC 0xC7E4C7E4U
 #define CRYPEXT4_VERSION 0x00000001U
 
+#define CRYPTEXT4_SB_OFFSET 1024 /* Superblock offset in bytes */
+
 /* super block struct (store offset 1024 byte, generally block one) */
 struct cryptext4_super_block {
     __le32 s_magic; /* magic number */
