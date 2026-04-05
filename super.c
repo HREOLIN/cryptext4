@@ -55,7 +55,7 @@ static void cryptext4_put_super(struct super_block *sb)
     kill_block_super(sb);  // 默认释放块设备 superblock
 }
 
-/* Stage 1: superblock operations */
+/* stage 2: superblock operations */
 static const struct super_operations cryptext4_sops = {
     .alloc_inode   = cryptext4_alloc_inode,
     .destroy_inode = cryptext4_destroy_inode,

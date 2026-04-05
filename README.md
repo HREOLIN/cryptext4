@@ -127,7 +127,7 @@ ls -la /mnt/cryptext4
 
 ## 🛣️ Roadmap
 
-### Stage 1
+### stage 2
 
 * Superblock
 * Mount support

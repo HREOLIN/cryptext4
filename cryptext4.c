@@ -1,5 +1,5 @@
 /*
- * cryptext4.c - Stage 1: Simple kernel filesystem skeleton
+ * cryptext4.c - Stage 2: Simple kernel filesystem skeleton
  *
  * Copyright (C) 2026 Carl.Hu <hcllht@gmail.com>
  *
@@ -54,10 +54,10 @@ static int cryptext4_statfs(struct dentry *dentry, struct kstatfs *buf)
 static void cryptext4_put_super(struct super_block *sb)
 {
     printk(KERN_INFO "cryptext4: superblock released\n");
-    kill_block_super(sb);  // 默认释放块设备 superblock
+    // kill_block_super(sb);  // 默认释放块设备 superblock
 }
 
-/* Stage 1: superblock operations */
+/* Stage 2: superblock operations */
 static const struct super_operations cryptext4_sops = {
     // .alloc_inode   = cryptext4_alloc_inode,
     .destroy_inode = cryptext4_destroy_inode,
@@ -88,6 +88,7 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
         struct dentry *dentry, unsigned int flags)
 {
     /* Placeholder for lookup implementation */
+    pr_info("cryptext4: lookup called for name '%s'\n", dentry->d_name.name);
     return ERR_PTR(-ENOSYS);
 }
 
@@ -106,6 +107,7 @@ static const struct inode_operations cryptext4_dir_inode_ops = {
 static void cryptext4_kill_sb(struct super_block *sb)
 {
     struct cryptext4_sb_info *sbi = sb->s_fs_info;
+    pr_info("cryptext4: killing superblock\n");
 
     if (sbi) {
         kfree(sbi->raw_sb);
@@ -231,7 +233,7 @@ static int __init cryptext4_init(void)
         return ret;
     }
 
-    pr_info("cryptext4: Stage 1 module loaded successfully\n");
+    pr_info("cryptext4: stage 2 module loaded successfully\n");
     return 0;
 }
 
@@ -239,7 +241,7 @@ static int __init cryptext4_init(void)
 static void __exit cryptext4_exit(void)
 {
     unregister_filesystem(&cryptext4_fs_type);
-    pr_info("cryptext4: Stage 1 module unloaded\n");
+    pr_info("cryptext4: stage 2 module unloaded\n");
 }
 
 module_init(cryptext4_init);
@@ -247,5 +249,5 @@ module_exit(cryptext4_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Carl.Hu + Grok");
-MODULE_DESCRIPTION("Cryptext4 - Simple encrypted ext4-like filesystem (Stage 1 skeleton)");
+MODULE_DESCRIPTION("Cryptext4 - Simple encrypted ext4-like filesystem (stage 2 skeleton)");
 MODULE_VERSION("0.1-stage1");

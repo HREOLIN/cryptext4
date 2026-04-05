@@ -40,7 +40,7 @@ struct cryptext4_super_block {
 
 #define CRYPTEXT4_SB_SIZE    sizeof(struct cryptext4_super_block)
 
-/* Simplify inode (stage 1 only defines the structure, not used yet) */
+/* Simplify inode (stage 2 only defines the structure, not used yet) */
 struct cryptext4_inode {
     __le16 i_mode; /* file mode */
     __le32 i_uid; /* owner uid */
