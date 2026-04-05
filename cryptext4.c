@@ -23,19 +23,32 @@
 #include <linux/log2.h>
 #include "disk_format.h"
 
-// static struct inode *cryptext4_alloc_inode(struct super_block *sb)
-// {
-//     struct inode *inode;
+/* global variables */
+static atomic_t cryptext4_inode_count = ATOMIC_INIT(2);
 
-//     inode = new_inode(sb);  // 使用内核默认分配器
-//     if (!inode)
-//         return NULL;
+/* =============== Superblock information ============== */
+struct cryptext4_sb_info {
+    struct super_block *sb;
+    struct cryptext4_super_block *raw_sb;   /* raw superblock from disk */
+    void *private;                          /* reserved for encryption keys, etc. */
+};
 
-//     /* 初始化 inode 时间 */
-//     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+/* ====================== 前向声明 ====================== */
+static int cryptext4_create(struct user_namespace *mnt_userns,
+                            struct inode *dir, struct dentry *dentry,
+                            umode_t mode, bool excl);
 
-//     return inode;
-// }
+static int cryptext4_mkdir(struct user_namespace *mnt_userns,
+                           struct inode *dir, struct dentry *dentry,
+                           umode_t mode);
+
+static void print_block_hex(const char *buf, size_t size);
+
+/* ====================== Directory Inode & File Operations (提前声明) ====================== */
+static const struct inode_operations cryptext4_dir_inode_ops;
+static const struct file_operations cryptext4_dir_ops;
+
+
 
 /* destroy_inode 期望返回 void，而 generic_delete_inode 返回 int */
 static void cryptext4_destroy_inode(struct inode *inode)
@@ -66,12 +79,6 @@ static const struct super_operations cryptext4_sops = {
     .put_super     = cryptext4_put_super,
 };
 
-struct cryptext4_sb_info {
-    struct super_block *sb;
-    struct cryptext4_super_block *raw_sb;   /* raw superblock from disk */
-    void *private;                          /* reserved for encryption keys, etc. */
-};
-
 /* ========== directory iterates (ls) ============== */
 static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 {
@@ -92,15 +99,77 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
     return ERR_PTR(-ENOSYS);
 }
 
-/* ========== file operations for directory ============== */
-static const struct file_operations cryptext4_dir_ops = {
-    .owner = THIS_MODULE,
-    .iterate_shared = cryptext4_iterate,
-};
+/* ====================== Create File ====================== */
+static int cryptext4_create(struct user_namespace *mnt_userns,
+                            struct inode *dir, struct dentry *dentry,
+                            umode_t mode, bool excl)
+{
+    struct inode *inode;
+    uint32_t ino = atomic_inc_return(&cryptext4_inode_count);
 
-/* ========== inode operations for directory ============== */
+    pr_info("cryptext4: create file '%s' (ino=%u)\n", dentry->d_name.name, ino);
+
+    inode = new_inode(dir->i_sb);
+    if (!inode)
+        return -ENOMEM;
+
+    inode->i_ino = ino;
+    inode->i_mode = mode | S_IFREG;
+    inode->i_uid.val = current_fsuid().val;
+    inode->i_gid.val = current_fsgid().val;
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+    inode->i_size = 0;
+
+    inode->i_op = &simple_dir_inode_operations;   // 5.15 临时方案
+    inode->i_fop = &simple_dir_operations;
+
+    d_instantiate(dentry, inode);
+    mark_inode_dirty(inode);
+    mark_inode_dirty(dir);
+
+    return 0;
+}
+
+/* ====================== Create Directory ====================== */
+static int cryptext4_mkdir(struct user_namespace *mnt_userns,
+                           struct inode *dir, struct dentry *dentry,
+                           umode_t mode)
+{
+    struct inode *inode;
+    uint32_t ino = atomic_inc_return(&cryptext4_inode_count);
+
+    pr_info("cryptext4: mkdir '%s' (ino=%u)\n", dentry->d_name.name, ino);
+
+    inode = new_inode(dir->i_sb);
+    if (!inode)
+        return -ENOMEM;
+
+    inode->i_ino = ino;
+    inode->i_mode = mode | S_IFDIR;
+    inode->i_uid.val = current_fsuid().val;
+    inode->i_gid.val = current_fsgid().val;
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+
+    inode->i_op = &cryptext4_dir_inode_ops;
+    inode->i_fop = &cryptext4_dir_ops;
+
+    d_instantiate(dentry, inode);
+    mark_inode_dirty(inode);
+    mark_inode_dirty(dir);
+
+    return 0;
+}
+
+/* ====================== 现在定义目录操作集 ====================== */
 static const struct inode_operations cryptext4_dir_inode_ops = {
     .lookup = cryptext4_lookup,
+    .create = cryptext4_create,
+    .mkdir  = cryptext4_mkdir,
+};
+
+static const struct file_operations cryptext4_dir_ops = {
+    .owner          = THIS_MODULE,
+    .iterate_shared = cryptext4_iterate,
 };
 
 /* Kill superblock - cleanup */
