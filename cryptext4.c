@@ -23,6 +23,8 @@
 #include <linux/log2.h>
 #include "disk_format.h"
 
+extern struct super_operations cryptext4_sops;
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Carl.Hu + Grok");
 MODULE_DESCRIPTION("Cryptext4 - Simple encrypted ext4-like filesystem (Stage 1 skeleton)");
