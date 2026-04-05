@@ -41,11 +41,6 @@ static void cryptext4_destroy_inode(struct inode *inode)
     generic_delete_inode(inode);
 }
 
-/* destroy_inode 期望返回 void，而 generic_delete_inode 返回 int */
-static void cryptext4_destroy_inode(struct inode *inode)
-{
-    generic_delete_inode(inode);
-}
 
 /* statfs 回调，返回文件系统统计信息 */
 static int cryptext4_statfs(struct dentry *dentry, struct kstatfs *buf)
