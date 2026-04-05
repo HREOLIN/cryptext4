@@ -78,13 +78,25 @@ static void cryptext4_kill_sb(struct super_block *sb)
     pr_info("cryptext4: superblock killed\n");
 }
 
+void print_block_hex(const char *buf, size_t size) 
+{
+    size_t i;
+    for (i = 0; i < size; i++) {
+        printk(KERN_CONT "%02x ", (unsigned char)buf[i]);
+        if ((i + 1) % 16 == 0)
+            printk(KERN_CONT "\n");
+    }
+    if (i % 16 != 0)
+        printk(KERN_CONT "\n");
+}
+
 /* Fill superblock (legacy API for 5.15 compatibility) */
 static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
 {
     struct cryptext4_sb_info *sbi;
     struct buffer_head *bh;
-    struct cryptext4_super_block *disk_sb; 
     struct inode *root;
+    char *sb_data = NULL;
 
     sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
     if (!sbi)
@@ -101,26 +113,22 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         return -EIO;
     }
 
-    disk_sb = (struct cryptext4_super_block *)(bh->b_data + CRYPTEXT4_SB_OFFSET);
+    print_block_hex((char *)bh->b_data + CRYPTEXT4_SB_OFFSET, 128); /* Debug: print raw superblock data */
+    sb_data = (char *)bh->b_data + CRYPTEXT4_SB_OFFSET;
 
-    if (le32_to_cpu(disk_sb->s_magic) != CRYPTEXT4_MAGIC) {
-        pr_err("cryptext4: invalid magic number (not a cryptext4 fs)\n");
+    sbi->raw_sb = kmemdup(sb_data, CRYPTEXT4_SB_SIZE, GFP_KERNEL);
+    if(sbi->raw_sb != NULL && le32_to_cpu(sbi->raw_sb->s_magic) == CRYPTEXT4_MAGIC) {
+        pr_info("cryptext4: valid superblock found on disk\n");
+    } else {
+        pr_err("cryptext4: invalid superblock (magic mismatch or read error)\n");
         brelse(bh);
         kfree(sbi);
         return -EINVAL;
     }
-
-    sbi->raw_sb = kmemdup(disk_sb, CRYPTEXT4_SB_SIZE, GFP_KERNEL);
     brelse(bh);
 
-    if (!sbi->raw_sb) {
-        pr_err("cryptext4: failed to duplicate superblock\n");
-        kfree(sbi);
-        return -ENOMEM;
-    }
-
     /* Setup superblock */
-    sb->s_magic = CRYPTEXT4_MAGIC;
+    sb->s_magic = le32_to_cpu(sbi->raw_sb->s_magic);
     sb->s_blocksize = le32_to_cpu(sbi->raw_sb->s_blocksize);
     sb->s_blocksize_bits = ilog2(sb->s_blocksize);
     sb->s_maxbytes = 1LL << 40;          /* 1TB limit for now, adjustable later */
