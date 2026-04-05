@@ -23,19 +23,19 @@
 #include <linux/log2.h>
 #include "disk_format.h"
 
-static struct inode *cryptext4_alloc_inode(struct super_block *sb)
-{
-    struct inode *inode;
+// static struct inode *cryptext4_alloc_inode(struct super_block *sb)
+// {
+//     struct inode *inode;
 
-    inode = new_inode(sb);  // 使用内核默认分配器
-    if (!inode)
-        return NULL;
+//     inode = new_inode(sb);  // 使用内核默认分配器
+//     if (!inode)
+//         return NULL;
 
-    /* 初始化 inode 时间 */
-    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+//     /* 初始化 inode 时间 */
+//     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 
-    return inode;
-}
+//     return inode;
+// }
 
 /* destroy_inode 期望返回 void，而 generic_delete_inode 返回 int */
 static void cryptext4_destroy_inode(struct inode *inode)
@@ -59,7 +59,7 @@ static void cryptext4_put_super(struct super_block *sb)
 
 /* Stage 1: superblock operations */
 static const struct super_operations cryptext4_sops = {
-    .alloc_inode   = cryptext4_alloc_inode,
+    // .alloc_inode   = cryptext4_alloc_inode,
     .destroy_inode = cryptext4_destroy_inode,
     .drop_inode    = generic_delete_inode,
     .statfs        = cryptext4_statfs,
@@ -182,7 +182,7 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         return -ENOMEM;
     }   
 
-    root->i_ino = 1; /* Root inode number */
+    root->i_ino = 1; 
     root->i_mode = S_IFDIR | 0755; /* Directory with 755 permissions */
     root->i_atime = root->i_mtime = root->i_ctime = current_time(root);
     root->i_op = &cryptext4_dir_inode_ops;
