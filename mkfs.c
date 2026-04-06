@@ -82,65 +82,122 @@ int main(int argc, char *argv[])
     uint32_t total_blocks = size / BLOCK_SIZE;
 
     /*
-    * ===== 磁盘布局（v2）=====
+    * ===== 磁盘布局（v3）=====
     *
     * block 0:
     *   [0 ~ 1023]    保留
     *   [1024 ~ ...]  superblock
     *
-    * block 1: inode bitmap（未来）
-    * block 2: block bitmap（未来）
-    * block 3~6: inode table（预留）
+    * block 1: inode bitmap
+    * block 2: block bitmap
+    * block 3~6: inode table
     * block 7+: data blocks
     */
-    uint32_t reserved_blocks = 8;
 
-    /* 初始化超级块 */
-    sb.s_magic = cpu_to_le32(CRYPTEXT4_MAGIC);
-    sb.s_version = cpu_to_le32(CRYPEXT4_VERSION);
-    sb.s_blocksize = cpu_to_le32(BLOCK_SIZE);
-    sb.s_blocks_count = cpu_to_le32(total_blocks);
-    sb.s_inodes_count = cpu_to_le32(1024);   // 简化
+    
+    /* stage 3 parameters define */
+    uint32_t inodes_per_group = CRYPTEXT4_INODES_PER_GROUP;
+    uint32_t blocks_per_group = CRYPTEXT4_BLOCKS_PER_GROUP;
+    uint32_t inode_bitmap_block = 1;
+    uint32_t block_bitmap_block = 2;
+    uint32_t inode_table_start = 3;
+    uint32_t reserved_blocks = 19; // 0~18 被占用
 
-    sb.s_free_blocks = sb.s_blocks_count;
-    sb.s_free_inodes = sb.s_inodes_count;
+    /* ==================== init superblock ======================= */
+    sb.s_magic              = cpu_to_le32(CRYPTEXT4_MAGIC);
+    sb.s_version            = cpu_to_le32(CRYPEXT4_VERSION);
+    sb.s_blocksize          = cpu_to_le32(BLOCK_SIZE);
+    sb.s_blocks_count       = cpu_to_le32(total_blocks);
+    sb.s_inodes_count       = cpu_to_le32(inodes_per_group);
+    sb.s_free_blocks        = cpu_to_le32(total_blocks - reserved_blocks);
+    sb.s_free_inodes        = cpu_to_le32(inodes_per_group - 1);   // inode 1 为根目录
+    sb.s_blocks_count       = cpu_to_le32(total_blocks);
+
+    /* Stage 3 new fields */
+    sb.s_inode_per_group    = cpu_to_le32(inodes_per_group);
+    sb.s_block_per_group    = cpu_to_le32(blocks_per_group);
+    sb.s_inode_bitmap_block = cpu_to_le32(inode_bitmap_block);
+    sb.s_block_bitmap_block = cpu_to_le32(block_bitmap_block);
+    sb.s_inode_table_start  = cpu_to_le32(inode_table_start);
+
+    // /* 初始化超级块 */
+    // sb.s_magic = cpu_to_le32(CRYPTEXT4_MAGIC);
+    // sb.s_version = cpu_to_le32(CRYPEXT4_VERSION);
+    // sb.s_blocksize = cpu_to_le32(BLOCK_SIZE);
+    // sb.s_blocks_count = cpu_to_le32(total_blocks);
+    // sb.s_inodes_count = cpu_to_le32(1024);   // 简化
+
+    // sb.s_free_blocks = sb.s_blocks_count;
+    // sb.s_free_inodes = sb.s_inodes_count;
 
     sb.s_encrypt_algo = cpu_to_le32(1); // AES-XTS
-
     gen_random(sb.s_salt, sizeof(sb.s_salt)); // 生成随机 salt
 
-    /* ========== write block0 =========== */
+    /* ================== write superblock ================== */
     unsigned char block[BLOCK_SIZE] = {0};
     memcpy(block + SUPERBLOCK_OFFSET, &sb, sizeof(sb));
 
-    if(lseek(fd, 0, SEEK_SET) != 0) {
-        perror("lseek");
+    lseek(fd, 0, SEEK_SET);
+    if (write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
+        perror("write superblock");
         close(fd);
         return 1;
     }
 
-    if(write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
-        perror("write block0");
+    /* ==================== 初始化 Inode Bitmap ==================== */
+    memset(block, 0, BLOCK_SIZE);
+    block[0] = 0x03;                    // inode 0 和 inode 1 被占用
+
+    lseek(fd, inode_bitmap_block * BLOCK_SIZE, SEEK_SET);
+    if (write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
+        perror("write inode bitmap");
         close(fd);
         return 1;
     }
 
-    memset(block, 0, BLOCK_SIZE); // 清空缓冲区
-    for (uint32_t i = 1; i < reserved_blocks; i++) {
+    /* ==================== 初始化 Block Bitmap ==================== */
+    memset(block, 0, BLOCK_SIZE);
+    for (uint32_t i = 0; i < reserved_blocks; i++) {
+        int byte_idx = i / 8;
+        int bit_idx  = i % 8;
+        block[byte_idx] |= (1u << bit_idx);
+    }
+
+    lseek(fd, block_bitmap_block * BLOCK_SIZE, SEEK_SET);
+    if (write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
+        perror("write block bitmap");
+        close(fd);
+        return 1;
+    }
+
+    /* ==================== 清零 Inode Table ==================== */
+    memset(block, 0, BLOCK_SIZE);
+    for (uint32_t i = 0; i < 16; i++) {        // 16 blocks = 1024 inodes
         if (write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
-            perror("write metadata block");
+            perror("write inode table");
             close(fd);
             return 1;
         }
     }
 
-        /* ===== 输出信息 ===== */
-    printf("cryptext4 mkfs v2 success:\n");
-    printf("  device:        %s\n", argv[1]);
-    printf("  total blocks:  %u\n", total_blocks);
-    printf("  free blocks:   %u\n", total_blocks - reserved_blocks);
-    printf("  block size:    %d\n", BLOCK_SIZE);
-    printf("  superblock at: offset %d\n", SUPERBLOCK_OFFSET);
+    /* ==================== 清零剩余保留块 ==================== */
+    memset(block, 0, BLOCK_SIZE);
+    for (uint32_t i = reserved_blocks; i < 32; i++) {   // 多清一点保险
+        if (write(fd, block, BLOCK_SIZE) != BLOCK_SIZE) {
+            perror("write reserved blocks");
+            close(fd);
+            return 1;
+        }
+    }
+
+    printf("cryptext4 mkfs v3 (Stage 3) success:\n");
+    printf("  device:             %s\n", device);
+    printf("  total blocks:       %u\n", total_blocks);
+    printf("  inodes per group:   %u\n", inodes_per_group);
+    printf("  inode bitmap:       block %u\n", inode_bitmap_block);
+    printf("  block bitmap:       block %u\n", block_bitmap_block);
+    printf("  inode table start:  block %u\n", inode_table_start);
+    printf("  reserved blocks:    %u\n", reserved_blocks);
 
     close(fd);
     return 0;

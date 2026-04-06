@@ -23,6 +23,9 @@
 #define CRYPEXT4_VERSION 0x00000001U
 
 #define CRYPTEXT4_SB_OFFSET 1024 /* Superblock offset in bytes */
+#define CRYPTEXT4_INODES_PER_GROUP 1024
+#define CRYPTEXT4_BLOCKS_PER_GROUP 8192
+
 
 /* super block struct (store offset 1024 byte, generally block one) */
 struct cryptext4_super_block {
@@ -33,9 +36,18 @@ struct cryptext4_super_block {
     __le32 s_inodes_count; /* total inodes count */
     __le32 s_free_blocks; /* free blocks count */
     __le32 s_free_inodes; /* free inodes count */
+
+    /* Stage 3 */
+    __le32 s_inode_per_group; /* inodes per group */
+    __le32 s_block_per_group; /* blocks per group */
+    __le32 s_inode_bitmap_block; /* block number of inode bitmap */
+    __le32 s_block_bitmap_block; /* block number of block bitmap */
+    __le32 s_inode_table_start; /* block number of inode table */
+
     unsigned char s_salt[32]; /* salt for encryption */
     __le32 s_encrypt_algo;  /* encryption algorithm, 1 = AES-XTS */
-    __le32 s_reserved[16]; /* reserved for future use */
+
+    __le32 s_reserved[8]; /* reserved for future use */
 };
 
 #define CRYPTEXT4_SB_SIZE    sizeof(struct cryptext4_super_block)

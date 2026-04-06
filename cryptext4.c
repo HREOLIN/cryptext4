@@ -21,7 +21,22 @@
 #include <linux/time.h>
 #include <linux/uaccess.h>
 #include <linux/log2.h>
+#include <linux/splice.h>
+#include <linux/atomic.h>
 #include "disk_format.h"
+
+/* ====================== Stage 2: 内存文件模拟结构 ====================== */
+struct cryptext4_file_data {
+    struct list_head list;
+    char name[256];
+    uint32_t ino;
+    char *data;          // 文件内容（内存分配）
+    size_t size;         // 当前文件大小
+    umode_t mode;
+};
+
+static LIST_HEAD(cryptext4_files);   // 全局内存文件链表（根目录下所有文件）
+
 
 /* global variables */
 static atomic_t cryptext4_inode_count = ATOMIC_INIT(2);
@@ -31,7 +46,13 @@ struct cryptext4_sb_info {
     struct super_block *sb;
     struct cryptext4_super_block *raw_sb;   /* raw superblock from disk */
     void *private;                          /* reserved for encryption keys, etc. */
+
+    /* Stage 3 */
+    unsigned long *inode_bitmap; /* Bitmap for inode allocation */
+    unsigned long *block_bitmap; /* Bitmap for block allocation */
+    uint32_t inode_table_start_block; /* Starting block of inode table */
 };
+
 
 /* ====================== 前向声明 ====================== */
 static int cryptext4_create(struct user_namespace *mnt_userns,
@@ -82,11 +103,17 @@ static const struct super_operations cryptext4_sops = {
 /* ========== directory iterates (ls) ============== */
 static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 {
-    if(ctx->pos) /* No entries for now, just return EOF */
-        return 0;
+    pr_info("cryptext4: iterate called, pos = %lld\n", ctx->pos);
 
-    dir_emit_dots(filp, ctx); /* Emit . and .. */
-    ctx->pos = 2; /* Mark that we've emitted entries */
+    if (ctx->pos == 0) {
+        dir_emit_dots(filp, ctx);
+        ctx->pos = 2;
+        return 0;
+    }
+
+    /* Stage 2：目前我们不做复杂目录项管理，只显示 . 和 .. */
+    /* 后面 Stage 3 会实现真正的目录项遍历 */
+
     return 0;
 }
 
@@ -96,38 +123,115 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
 {
     /* Placeholder for lookup implementation */
     pr_info("cryptext4: lookup called for name '%s'\n", dentry->d_name.name);
-    return ERR_PTR(-ENOSYS);
+    if(dentry->d_name.name && dentry->d_name.len > 0) {
+        pr_info("cryptext4: lookup - name '%s' (len=%u)\n", dentry->d_name.name, dentry->d_name.len);
+    } else {
+        pr_info("cryptext4: lookup - empty name\n");
+    }
+
+    return NULL; /* Not found */
 }
 
-/* ====================== Create File ====================== */
+/* ====================== Create File (Stage 3 - Inode Bitmap) ====================== */
 static int cryptext4_create(struct user_namespace *mnt_userns,
                             struct inode *dir, struct dentry *dentry,
                             umode_t mode, bool excl)
 {
     struct inode *inode;
     uint32_t ino = atomic_inc_return(&cryptext4_inode_count);
+    // struct cryptext4_file_data *file_data;
+    struct cryptext4_sb_info *sbi = dir->i_sb->s_fs_info;
+    int bit;
 
+    pr_info("cryptext4: [Stage 3] create file '%s' - starting inode allocation\n",  dentry->d_name.name);
     pr_info("cryptext4: create file '%s' (ino=%u)\n", dentry->d_name.name, ino);
 
+    if(!sbi || !sbi->inode_bitmap) {
+        pr_err("cryptext4: create file '%s' - error: superblock info or inode bitmap not initialized\n", dentry->d_name.name);
+        return -EIO;
+    }
+
+    /* 1. inode bitmap 中分配一个空闲 inode 号 */
+    bit = find_first_zero_bit(sbi->inode_bitmap, CRYPTEXT4_INODES_PER_GROUP);
+    if(bit >= CRYPTEXT4_INODES_PER_GROUP) {
+        pr_err("cryptext4: create file '%s' - error: no free inodes available\n", dentry->d_name.name);
+        return -ENOSPC;
+    }
+
+    ino = bit + 1; /* Inode numbers start from 1 */
+    set_bit(bit, sbi->inode_bitmap); /* Mark inode as allocated */
+
+    /* s. update superblock 中的 free_inodes counts */
+    sbi->raw_sb->s_free_inodes = cpu_to_le32(le32_to_cpu(sbi->raw_sb->s_free_inodes) - 1);
+    pr_info("cryptext4: create file '%s' - allocated inode %u (bit %d)\n", dentry->d_name.name, ino, bit);
+
+    /* 4. create vfs inode */
     inode = new_inode(dir->i_sb);
-    if (!inode)
+    if (!inode) {
+        clear_bit(bit, sbi->inode_bitmap); /* Rollback inode allocation */
+        pr_err("cryptext4: create file '%s' - error: failed to allocate VFS inode\n", dentry->d_name.name);
         return -ENOMEM;
+    }
 
     inode->i_ino = ino;
     inode->i_mode = mode | S_IFREG;
-    inode->i_uid.val = current_fsuid().val;
-    inode->i_gid.val = current_fsgid().val;
+    inode->i_uid = current_fsuid();
+    inode->i_gid = current_fsgid();
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
     inode->i_size = 0;
 
-    inode->i_op = &simple_dir_inode_operations;   // 5.15 临时方案
+    /* 使用内核简单文件操作（Stage 3 暂时） */
+    inode->i_op = &simple_dir_inode_operations;
     inode->i_fop = &simple_dir_operations;
 
     d_instantiate(dentry, inode);
     mark_inode_dirty(inode);
     mark_inode_dirty(dir);
 
+    pr_info("cryptext4: file '%s' created successfully (ino=%u)\n", 
+            dentry->d_name.name, ino);
+
     return 0;
+
+    // /* 在内存中创建文件数据结构 */
+    // file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
+    // if (!file_data)
+    //     return -ENOMEM;
+
+    // strncpy(file_data->name, dentry->d_name.name, sizeof(file_data->name)-1);
+    // file_data->ino = ino;
+    // file_data->mode = mode | S_IFREG;
+    // file_data->data = NULL;
+    // file_data->size = 0;
+
+    // list_add_tail(&file_data->list, &cryptext4_files);
+
+    // /* 创建 VFS inode */
+    // inode = new_inode(dir->i_sb);
+    // if (!inode) {
+    //     kfree(file_data);
+    //     return -ENOMEM;
+    // }
+
+    // inode->i_ino = ino;
+    // inode->i_mode = file_data->mode;
+    // inode->i_uid = current_fsuid();
+    // inode->i_gid = current_fsgid();
+    // inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+    // inode->i_size = 0;
+
+    // /* ==================== 重要修改部分 ==================== */
+    // /* 5.15 内核兼容方案：先使用 simple_dir_inode_operations */
+    // inode->i_op = &simple_dir_inode_operations;
+    // inode->i_fop = &simple_dir_operations;
+    // /* ==================================================== */
+
+    // d_instantiate(dentry, inode);
+    // mark_inode_dirty(inode);
+    // mark_inode_dirty(dir);
+
+    // pr_info("cryptext4: file '%s' created in memory\n", dentry->d_name.name);
+    // return 0;
 }
 
 /* ====================== Create Directory ====================== */
@@ -166,6 +270,13 @@ static const struct inode_operations cryptext4_dir_inode_ops = {
     .create = cryptext4_create,
     .mkdir  = cryptext4_mkdir,
 };
+
+// static const struct file_operations cryptext4_file_ops = {
+//     .owner = THIS_MODULE,
+//     .read  = cryptext4_file_read,
+//     .write = cryptext4_file_write,
+//     .llseek = default_llseek,
+// };
 
 static const struct file_operations cryptext4_dir_ops = {
     .owner          = THIS_MODULE,
@@ -207,6 +318,13 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
     struct inode *root;
     char *sb_data = NULL;
 
+    pr_info("cryptext4: Stage 3 fill_super started\n");
+
+    if(!sb_set_blocksize(sb, BLOCK_SIZE)) {
+        pr_err("cryptext4: unsupported block size %d\n", BLOCK_SIZE);
+        return -EINVAL;
+    }
+
     sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
     if (!sbi)
         return -ENOMEM;
@@ -236,15 +354,57 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
     }
     brelse(bh);
 
+    /* Stage 3: 初始化 inode 和 block bitmap */
+    sbi->inode_table_start_block = le32_to_cpu(sbi->raw_sb->s_inode_table_start);
+    sbi->inode_bitmap = kzalloc(BITS_TO_LONGS(CRYPTEXT4_INODES_PER_GROUP) * sizeof(long), GFP_KERNEL);
+    sbi->block_bitmap = kzalloc(BITS_TO_LONGS(CRYPTEXT4_BLOCKS_PER_GROUP) * sizeof(long), GFP_KERNEL);
+    
+    if(!sbi->inode_bitmap || !sbi->block_bitmap) {
+        pr_err("cryptext4: failed to allocate memory for bitmaps\n");
+        kfree(sbi->inode_bitmap);
+        kfree(sbi->block_bitmap);
+        kfree(sbi->raw_sb);
+        kfree(sbi);
+        return -ENOMEM;
+    }
+
+    /* read inode bitmap to memory */
+    bh = sb_bread(sb, le32_to_cpu(sbi->raw_sb->s_inode_bitmap_block));
+    if (bh) {
+        memcpy(sbi->inode_bitmap, bh->b_data, BLOCK_SIZE);
+        brelse(bh);
+    } else {
+        pr_err("cryptext4: failed to read inode bitmap\n");
+        kfree(sbi->inode_bitmap);
+        kfree(sbi->block_bitmap);
+        kfree(sbi->raw_sb);
+        kfree(sbi);
+        return -EIO;
+    }
+
+    /* read block bitmap to memory */
+    bh = sb_bread(sb, le32_to_cpu(sbi->raw_sb->s_block_bitmap_block));
+    if (bh) {
+        memcpy(sbi->block_bitmap, bh->b_data, BLOCK_SIZE);
+        brelse(bh);
+    } else {
+        pr_err("cryptext4: failed to read block bitmap\n");
+        kfree(sbi->inode_bitmap);
+        kfree(sbi->block_bitmap);
+        kfree(sbi->raw_sb);
+        kfree(sbi);
+        return -EIO;
+    }
+
     /* Setup superblock */
     sb->s_magic = le32_to_cpu(sbi->raw_sb->s_magic);
     sb->s_blocksize = le32_to_cpu(sbi->raw_sb->s_blocksize);
     sb->s_blocksize_bits = ilog2(sb->s_blocksize);
-    sb->s_maxbytes = 1LL << 40;          /* 1TB limit for now, adjustable later */
+    sb->s_maxbytes = 1LL << 40;                     /* 1TB limit for now, adjustable later */
     sb->s_op = &cryptext4_sops;                     /* Will be set in later stages */
+    sb->s_flags |= SB_NOATIME;                      /* Disable atime updates for simplicity */
 
     /* ======= create root inode ============= */
-
     root = new_inode(sb);
     if (!root) {
         pr_err("cryptext4: failed to allocate root inode\n");
