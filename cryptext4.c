@@ -320,10 +320,11 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
 
     pr_info("cryptext4: Stage 3 fill_super started\n");
 
-    if(!sb_set_blocksize(sb, BLOCK_SIZE)) {
-        pr_err("cryptext4: unsupported block size %d\n", BLOCK_SIZE);
-        return -EINVAL;
-    }
+    // 这里有问题，这里导致了读取失败，全部都是0，后续的 magic 也不对了
+    // if(!sb_set_blocksize(sb, BLOCK_SIZE)) {
+    //     pr_err("cryptext4: unsupported block size %d\n", BLOCK_SIZE);
+    //     return -EINVAL;
+    // }
 
     sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
     if (!sbi)
@@ -340,8 +341,14 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         return -EIO;
     }
 
-    print_block_hex((char *)bh->b_data + CRYPTEXT4_SB_OFFSET, 128); /* Debug: print raw superblock data */
-    sb_data = (char *)bh->b_data + CRYPTEXT4_SB_OFFSET;
+/* 正确打印方式 */
+    pr_info("cryptext4: === Block 0 full dump (0~4095) ===\n");
+    print_block_hex((char *)bh->b_data, 4096);     // 先看整个 block 0（可选）
+
+    pr_info("cryptext4: === Superblock at offset 1024 (should have data) ===\n");
+    print_block_hex((char *)bh->b_data + 1024, 128);   // 只打印 superblock 部分
+    
+    sb_data = (char *)bh->b_data + 1024;
 
     sbi->raw_sb = kmemdup(sb_data, CRYPTEXT4_SB_SIZE, GFP_KERNEL);
     if(sbi->raw_sb != NULL && le32_to_cpu(sbi->raw_sb->s_magic) == CRYPTEXT4_MAGIC) {
