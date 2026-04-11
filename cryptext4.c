@@ -143,27 +143,26 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
     struct cryptext4_sb_info *sbi = dir->i_sb->s_fs_info;
     int bit;
 
-    pr_info("cryptext4: [Stage 3] create file '%s' - starting inode allocation\n",  dentry->d_name.name);
-    pr_info("cryptext4: create file '%s' (ino=%u)\n", dentry->d_name.name, ino);
-
     if(!sbi || !sbi->inode_bitmap) {
         pr_err("cryptext4: create file '%s' - error: superblock info or inode bitmap not initialized\n", dentry->d_name.name);
         return -EIO;
     }
 
-    /* 1. inode bitmap 中分配一个空闲 inode 号 */
-    bit = find_first_zero_bit(sbi->inode_bitmap, CRYPTEXT4_INODES_PER_GROUP);
-    if(bit >= CRYPTEXT4_INODES_PER_GROUP) {
-        pr_err("cryptext4: create file '%s' - error: no free inodes available\n", dentry->d_name.name);
+    pr_info("cryptext4: [Stage 3] create file '%s' - allocating inode from bitmap\n", 
+            dentry->d_name.name);
+
+    /* 1. 从 inode bitmap 中寻找空闲 inode */
+    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inodes_per_group));
+    if (bit >= le32_to_cpu(sbi->raw_sb->s_inodes_per_group)) {
+        pr_err("cryptext4: no free inode available\n");
         return -ENOSPC;
     }
-
     ino = bit + 1; /* Inode numbers start from 1 */
     set_bit(bit, sbi->inode_bitmap); /* Mark inode as allocated */
 
     /* s. update superblock 中的 free_inodes counts */
     sbi->raw_sb->s_free_inodes = cpu_to_le32(le32_to_cpu(sbi->raw_sb->s_free_inodes) - 1);
-    pr_info("cryptext4: create file '%s' - allocated inode %u (bit %d)\n", dentry->d_name.name, ino, bit);
+    pr_info("cryptext4: allocated inode %u for '%s'\n", ino, dentry->d_name.name);
 
     /* 4. create vfs inode */
     inode = new_inode(dir->i_sb);
@@ -192,46 +191,6 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
             dentry->d_name.name, ino);
 
     return 0;
-
-    // /* 在内存中创建文件数据结构 */
-    // file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
-    // if (!file_data)
-    //     return -ENOMEM;
-
-    // strncpy(file_data->name, dentry->d_name.name, sizeof(file_data->name)-1);
-    // file_data->ino = ino;
-    // file_data->mode = mode | S_IFREG;
-    // file_data->data = NULL;
-    // file_data->size = 0;
-
-    // list_add_tail(&file_data->list, &cryptext4_files);
-
-    // /* 创建 VFS inode */
-    // inode = new_inode(dir->i_sb);
-    // if (!inode) {
-    //     kfree(file_data);
-    //     return -ENOMEM;
-    // }
-
-    // inode->i_ino = ino;
-    // inode->i_mode = file_data->mode;
-    // inode->i_uid = current_fsuid();
-    // inode->i_gid = current_fsgid();
-    // inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
-    // inode->i_size = 0;
-
-    // /* ==================== 重要修改部分 ==================== */
-    // /* 5.15 内核兼容方案：先使用 simple_dir_inode_operations */
-    // inode->i_op = &simple_dir_inode_operations;
-    // inode->i_fop = &simple_dir_operations;
-    // /* ==================================================== */
-
-    // d_instantiate(dentry, inode);
-    // mark_inode_dirty(inode);
-    // mark_inode_dirty(dir);
-
-    // pr_info("cryptext4: file '%s' created in memory\n", dentry->d_name.name);
-    // return 0;
 }
 
 /* ====================== Create Directory ====================== */
@@ -239,10 +198,25 @@ static int cryptext4_mkdir(struct user_namespace *mnt_userns,
                            struct inode *dir, struct dentry *dentry,
                            umode_t mode)
 {
+    struct cryptext4_sb_info *sbi = dir->i_sb->s_fs_info;
     struct inode *inode;
-    uint32_t ino = atomic_inc_return(&cryptext4_inode_count);
+    uint32_t ino;
+    int bit;
 
-    pr_info("cryptext4: mkdir '%s' (ino=%u)\n", dentry->d_name.name, ino);
+    if (!sbi || !sbi->inode_bitmap) {
+        pr_err("cryptext4: inode_bitmap not initialized\n");
+        return -EIO;
+    }
+
+    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inodes_per_group));
+    if (bit >= le32_to_cpu(sbi->raw_sb->s_inodes_per_group)) {
+        pr_err("cryptext4: no free inode available for directory\n");
+        return -ENOSPC;
+    }
+    ino = bit + 1; /* Inode numbers start from 1 */
+    set_bit(bit, sbi->inode_bitmap); /* Mark inode as allocated */
+
+    pr_info("cryptext4: allocated inode %u for directory '%s'\n", ino, dentry->d_name.name);
 
     inode = new_inode(dir->i_sb);
     if (!inode)
@@ -250,8 +224,8 @@ static int cryptext4_mkdir(struct user_namespace *mnt_userns,
 
     inode->i_ino = ino;
     inode->i_mode = mode | S_IFDIR;
-    inode->i_uid.val = current_fsuid().val;
-    inode->i_gid.val = current_fsgid().val;
+    inode->i_uid = current_fsuid();
+    inode->i_gid = current_fsgid();
     inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 
     inode->i_op = &cryptext4_dir_inode_ops;
@@ -402,7 +376,7 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         kfree(sbi);
         return -EIO;
     }
-    
+
     /* read block bitmap to memory */
     bh = sb_bread(sb, le32_to_cpu(sbi->raw_sb->s_block_bitmap_block));
     if (bh) {
