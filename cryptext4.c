@@ -152,8 +152,8 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
             dentry->d_name.name);
 
     /* 1. 从 inode bitmap 中寻找空闲 inode */
-    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inodes_per_group));
-    if (bit >= le32_to_cpu(sbi->raw_sb->s_inodes_per_group)) {
+    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inode_per_group));
+    if (bit >= le32_to_cpu(sbi->raw_sb->s_inode_per_group)) {
         pr_err("cryptext4: no free inode available\n");
         return -ENOSPC;
     }
@@ -208,8 +208,8 @@ static int cryptext4_mkdir(struct user_namespace *mnt_userns,
         return -EIO;
     }
 
-    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inodes_per_group));
-    if (bit >= le32_to_cpu(sbi->raw_sb->s_inodes_per_group)) {
+    bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inode_per_group));
+    if (bit >= le32_to_cpu(sbi->raw_sb->s_inode_per_group)) {
         pr_err("cryptext4: no free inode available for directory\n");
         return -ENOSPC;
     }
