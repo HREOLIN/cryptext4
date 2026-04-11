@@ -341,7 +341,6 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         return -EIO;
     }
 
-/* 正确打印方式 */
     pr_info("cryptext4: === Block 0 full dump (0~4095) ===\n");
     print_block_hex((char *)bh->b_data, 4096);     // 先看整个 block 0（可选）
 
@@ -361,6 +360,16 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
     }
     brelse(bh);
 
+    if(!sb_set_blocksize(sb, __le32_to_cpu(sbi->raw_sb->s_blocksize))) {
+        pr_err("cryptext4: unsupported block size %d\n", __le32_to_cpu(sbi->raw_sb->s_blocksize));
+        return -EINVAL;
+    }
+
+    pr_info("cryptext4: superblock read successfully: blocks=%u, inodes=%u, blocksize=%u\n",
+            le32_to_cpu(sbi->raw_sb->s_blocks_count),
+            le32_to_cpu(sbi->raw_sb->s_inodes_count),
+            le32_to_cpu(sbi->raw_sb->s_blocksize));
+            
     /* Stage 3: 初始化 inode 和 block bitmap */
     sbi->inode_table_start_block = le32_to_cpu(sbi->raw_sb->s_inode_table_start);
     sbi->inode_bitmap = kzalloc(BITS_TO_LONGS(CRYPTEXT4_INODES_PER_GROUP) * sizeof(long), GFP_KERNEL);
