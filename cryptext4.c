@@ -358,12 +358,13 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         kfree(sbi);
         return -EINVAL;
     }
-    brelse(bh);
 
     if(!sb_set_blocksize(sb, __le32_to_cpu(sbi->raw_sb->s_blocksize))) {
         pr_err("cryptext4: unsupported block size %d\n", __le32_to_cpu(sbi->raw_sb->s_blocksize));
         return -EINVAL;
     }
+    brelse(bh);
+    bh = NULL;
 
     pr_info("cryptext4: superblock read successfully: blocks=%u, inodes=%u, blocksize=%u\n",
             le32_to_cpu(sbi->raw_sb->s_blocks_count),
@@ -384,6 +385,10 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         return -ENOMEM;
     }
 
+    pr_info("s_inode_bitmap_block = %u, s_block_bitmap_block = %u\n",
+            le32_to_cpu(sbi->raw_sb->s_inode_bitmap_block),
+            le32_to_cpu(sbi->raw_sb->s_block_bitmap_block));
+    
     /* read inode bitmap to memory */
     bh = sb_bread(sb, le32_to_cpu(sbi->raw_sb->s_inode_bitmap_block));
     if (bh) {
@@ -397,7 +402,7 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
         kfree(sbi);
         return -EIO;
     }
-
+    
     /* read block bitmap to memory */
     bh = sb_bread(sb, le32_to_cpu(sbi->raw_sb->s_block_bitmap_block));
     if (bh) {
