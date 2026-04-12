@@ -103,6 +103,7 @@ static const struct super_operations cryptext4_sops = {
 /* ========== directory iterates (ls) ============== */
 static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 {
+    struct cryptext4_file_data *file_data;
     pr_info("cryptext4: iterate called, pos = %lld\n", ctx->pos);
 
     if (ctx->pos == 0) {
@@ -114,6 +115,15 @@ static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
     /* Stage 2：目前我们不做复杂目录项管理，只显示 . 和 .. */
     /* 后面 Stage 3 会实现真正的目录项遍历 */
 
+    /* iterate all file and directory entries */
+    list_for_each_entry(file_data, &cryptext4_files, list) {
+        unsigned int d_type = S_ISDIR(file_data->mode) ? DT_DIR : DT_REG;
+
+        if(!dir_emit(ctx, file_data->name, strlen(file_data->name), file_data->ino, d_type)) {
+            return 0; /* No more space in the buffer */
+        }
+        ctx->pos++;
+    }
     return 0;
 }
 
@@ -187,6 +197,19 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
     mark_inode_dirty(inode);
     mark_inode_dirty(dir);
 
+    {
+        struct cryptext4_file_data *file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
+        if (!file_data) {
+            clear_bit(bit, sbi->inode_bitmap); /* Rollback inode allocation */
+            pr_err("cryptext4: create file '%s' - error: failed to allocate file data\n", dentry->d_name.name);
+            return -ENOMEM;
+        }
+        strlcpy(file_data->name, dentry->d_name.name, sizeof(file_data->name));
+        file_data->ino = ino;
+        file_data->mode = mode | S_IFREG;
+        INIT_LIST_HEAD(&file_data->list);
+        list_add_tail(&file_data->list, &cryptext4_files);
+    }
     pr_info("cryptext4: file '%s' created successfully (ino=%u)\n", 
             dentry->d_name.name, ino);
 
@@ -234,6 +257,19 @@ static int cryptext4_mkdir(struct user_namespace *mnt_userns,
     d_instantiate(dentry, inode);
     mark_inode_dirty(inode);
     mark_inode_dirty(dir);
+
+    /* 把新创建的文件加入内存目录链表（让 ls 能看到） */
+    {
+        struct cryptext4_file_data *file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
+        if (file_data) {
+            strncpy(file_data->name, dentry->d_name.name, sizeof(file_data->name)-1);
+            file_data->ino = ino;
+            file_data->mode = inode->i_mode;
+            file_data->data = NULL;
+            file_data->size = 0;
+            list_add_tail(&file_data->list, &cryptext4_files);
+        }
+    }
 
     return 0;
 }
