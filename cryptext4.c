@@ -104,19 +104,26 @@ static const struct super_operations cryptext4_sops = {
 static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 {
     struct cryptext4_file_data *file_data;
+    loff_t pos = ctx->pos;
+    int i = 0;
+
     pr_info("cryptext4: iterate called, pos = %lld\n", ctx->pos);
 
-    if (ctx->pos == 0) {
-        dir_emit_dots(filp, ctx);
-        ctx->pos = 2;
-        return 0;
+    if (pos == 0) {
+        if(!dir_emit_dots(filp, ctx)) {
+            return 0; /* No more space in the buffer */
+        }
+        pos = ctx->pos;
     }
 
-    /* Stage 2：目前我们不做复杂目录项管理，只显示 . 和 .. */
-    /* 后面 Stage 3 会实现真正的目录项遍历 */
+    i = pos - 2; /* Skip . and .. */
 
-    /* iterate all file and directory entries */
     list_for_each_entry(file_data, &cryptext4_files, list) {
+        if(i > 0) {
+            i--;
+            continue; /* Skip until we reach the current position */
+        }
+
         unsigned int d_type = S_ISDIR(file_data->mode) ? DT_DIR : DT_REG;
 
         if(!dir_emit(ctx, file_data->name, strlen(file_data->name), file_data->ino, d_type)) {
@@ -139,7 +146,7 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
         pr_info("cryptext4: lookup - empty name\n");
     }
 
-    return NULL; /* Not found */
+    return ERR_PTR(-ENOENT);
 }
 
 /* ====================== Create File (Stage 3 - Inode Bitmap) ====================== */
