@@ -26,7 +26,20 @@ static ssize_t cryptext4_read(struct file *file,
                                size_t len,
                                loff_t *ppos)
 {
-    return 0; // 最小实现：空读
+    char *kbuf = "cryptext4: hello world\n";
+    size_t size = strlen(kbuf);
+
+    if (*ppos >= size)
+        return 0;
+
+    if (len > size - *ppos)
+        len = size - *ppos;
+
+    if (copy_to_user(buf, kbuf + *ppos, len))
+        return -EFAULT;
+
+    *ppos += len;
+    return len;
 }
 
 static ssize_t cryptext4_write(struct file *file,
@@ -34,6 +47,15 @@ static ssize_t cryptext4_write(struct file *file,
                                 size_t len,
                                 loff_t *ppos)
 {
+    char kbuf[128];
+
+    if(len > sizeof(kbuf) - 1)
+        len = sizeof(kbuf) - 1;
+    if (copy_from_user(kbuf, buf, len))
+        return -EFAULT;
+    kbuf[len] = '\0';
+    printk(KERN_INFO "cryptext4: write called, data = '%s', len = %zu\n", kbuf, len);
+
     return len; // 假装写成功
 }
 
