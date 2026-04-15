@@ -1,15 +1,15 @@
-obj-m += cryptext4.o
+obj-m += fscryptext4.o
+
+fscryptext4-objs := cryptext4.o file.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
+PWD  := $(shell pwd)
 
 all:
 	make -C $(KDIR) M=$(PWD) modules
 
 clean:
 	make -C $(KDIR) M=$(PWD) clean
-	rm -f mkfs.cryptext4
+	rm -f *.ko *.mod *.mod.c *.o modules.order Module.symvers
 
-mkfs: mkfs.c
-	gcc -o mkfs.cryptext4 mkfs.c -Wall -O2
-
-.PHONY: all clean mkfs
+.PHONY: all clean

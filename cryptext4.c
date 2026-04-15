@@ -24,6 +24,7 @@
 #include <linux/splice.h>
 #include <linux/atomic.h>
 #include "disk_format.h"
+#include "file.h"
 
 /* ====================== Stage 2: 内存文件模拟结构 ====================== */
 struct cryptext4_file_data {
@@ -197,8 +198,8 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
     inode->i_size = 0;
 
     /* 使用内核简单文件操作（Stage 3 暂时） */
-    inode->i_op = &simple_dir_inode_operations;
-    inode->i_fop = &simple_dir_operations;
+    inode->i_op  = &cryptext4_file_inode_ops;
+    inode->i_fop = &cryptext4_file_ops;
 
     d_instantiate(dentry, inode);
     mark_inode_dirty(inode);
