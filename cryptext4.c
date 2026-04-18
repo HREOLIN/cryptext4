@@ -200,7 +200,7 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
         return ERR_PTR(err);  // 返回错误指针
     }
 
-    ino = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
+    inode = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
     if (IS_ERR(inode)) {
         pr_err("cryptext4: iget error %ld for inode %u\n", PTR_ERR(inode), ino);
         return ERR_CAST(inode); // 返回错误指针
