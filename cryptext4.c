@@ -166,7 +166,7 @@ static int cryptext4_find_entry(struct inode *dir, struct dentry *dentry, ino_t 
 {
     if (dentry->d_name.len == 4 && 
         memcmp(dentry->d_name.name, "te.c", 4) == 0) {
-        *ino_out = 2;        // 假设 inode 号为 2（不能是 0 或 1）
+        *ino = 2;        // 假设 inode 号为 2（不能是 0 或 1）
         return 0;
     }
     // other file not found
@@ -200,7 +200,7 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
         return ERR_PTR(err);  // 返回错误指针
     }
 
-    inod = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
+    ino = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
     if (IS_ERR(inode)) {
         pr_err("cryptext4: iget error %ld for inode %u\n", PTR_ERR(inode), ino);
         return ERR_CAST(inode); // 返回错误指针
@@ -261,10 +261,6 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
 
     insert_inode_locked(inode);
 
-    d_instantiate(dentry, inode);
-    mark_inode_dirty(inode);
-    mark_inode_dirty(dir);
-
     {
         struct cryptext4_file_data *file_data = kzalloc(sizeof(*file_data), GFP_KERNEL);
         if (!file_data) {
@@ -278,6 +274,11 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
         INIT_LIST_HEAD(&file_data->list);
         list_add_tail(&file_data->list, &cryptext4_files);
     }
+
+    d_instantiate(dentry, inode);
+    mark_inode_dirty(inode);
+    mark_inode_dirty(dir);
+
     pr_info("cryptext4: file '%s' created successfully (ino=%u)\n", 
             dentry->d_name.name, ino);
 
