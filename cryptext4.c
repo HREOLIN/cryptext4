@@ -135,19 +135,78 @@ static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
     return 0;
 }
 
+
+struct inode *cryptext4_iget(struct super_block *sb, ino_t ino)
+{
+    struct inode *inode;
+
+    inode = iget_locked(sb, ino);
+    if (!inode)
+        return ERR_PTR(-ENOMEM);
+
+    if(!(inode->i_state & I_NEW)) {
+        return inode; /* Already exists, return it */
+    }
+
+    inode->i_ino = ino;
+    inode->i_sb = sb;
+    inode->i_mode = S_IFREG | 0644; /* Regular file with default permissions */
+    inode->i_op = &cryptext4_file_inode_ops;
+    inode->i_fop = &cryptext4_file_ops;
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+    set_nlink(inode, 1); /* Default link count */
+    unlock_new_inode(inode);
+
+    return inode;
+}
+
+
+/* ========== find entry ========================== */
+static int cryptext4_find_entry(struct inode *dir, struct dentry *dentry, ino_t *ino)
+{
+    if (dentry->d_name.len == 4 && 
+        memcmp(dentry->d_name.name, "te.c", 4) == 0) {
+        *ino_out = 2;        // 假设 inode 号为 2（不能是 0 或 1）
+        return 0;
+    }
+    // other file not found
+    return -ENOENT;
+}
+
 /* ========== lookup (research file) ============== */
 static struct dentry *cryptext4_lookup(struct inode *dir, 
         struct dentry *dentry, unsigned int flags)
 {
-    /* Placeholder for lookup implementation */
-    pr_info("cryptext4: lookup called for name '%s'\n", dentry->d_name.name);
-    if(dentry->d_name.name && dentry->d_name.len > 0) {
-        pr_info("cryptext4: lookup - name '%s' (len=%u)\n", dentry->d_name.name, dentry->d_name.len);
-    } else {
-        pr_info("cryptext4: lookup - empty name\n");
+
+    struct inode* inode = NULL;
+    ino_t ino = 0;
+    int err;
+
+    pr_info("cryptext4: lookup called for name '%.*s' (len=%u)\n",
+            (int)dentry->d_name.len, dentry->d_name.name, dentry->d_name.len);
+
+    /* TODO: Implement lookup logic serach file name */
+    err = cryptext4_find_entry(dir, dentry, &ino);
+
+    if (err == -ENOENT) {
+        /* 文件不存在 → 返回 negative dentry（非常重要！） */
+        d_add(dentry, NULL);
+        pr_info("cryptext4: lookup - negative dentry for '%.*s'\n",
+                (int)dentry->d_name.len, dentry->d_name.name);
+        return NULL;          // 返回 NULL 表示成功处理（negative dentry）
+    } else if (err < 0) {
+        pr_err("cryptext4: lookup error %d for '%.*s'\n", err,
+                (int)dentry->d_name.len, dentry->d_name.name);
+        return ERR_PTR(err);  // 返回错误指针
     }
 
-    return ERR_PTR(-ENOENT);
+    inod = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
+    if (IS_ERR(inode)) {
+        pr_err("cryptext4: iget error %ld for inode %u\n", PTR_ERR(inode), ino);
+        return ERR_CAST(inode); // 返回错误指针
+    }
+
+    return d_splice_alias(inode, dentry); /* 将 inode 和 dentry 关联起来，返回新的 dentry */
 }
 
 /* ====================== Create File (Stage 3 - Inode Bitmap) ====================== */
@@ -156,18 +215,17 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
                             umode_t mode, bool excl)
 {
     struct inode *inode;
-    uint32_t ino = atomic_inc_return(&cryptext4_inode_count);
-    // struct cryptext4_file_data *file_data;
+    struct cryptext4_file_data *file_data = NULL;
     struct cryptext4_sb_info *sbi = dir->i_sb->s_fs_info;
+    uint32_t ino = 0;
     int bit;
+
+    pr_info("cryptext4: create called for '%.*s'\n", (int)dentry->d_name.len, dentry->d_name.name);
 
     if(!sbi || !sbi->inode_bitmap) {
         pr_err("cryptext4: create file '%s' - error: superblock info or inode bitmap not initialized\n", dentry->d_name.name);
         return -EIO;
     }
-
-    pr_info("cryptext4: [Stage 3] create file '%s' - allocating inode from bitmap\n", 
-            dentry->d_name.name);
 
     /* 1. 从 inode bitmap 中寻找空闲 inode */
     bit = find_first_zero_bit(sbi->inode_bitmap, le32_to_cpu(sbi->raw_sb->s_inode_per_group));
@@ -200,6 +258,8 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
     /* 使用内核简单文件操作（Stage 3 暂时） */
     inode->i_op  = &cryptext4_file_inode_ops;
     inode->i_fop = &cryptext4_file_ops;
+
+    insert_inode_locked(inode);
 
     d_instantiate(dentry, inode);
     mark_inode_dirty(inode);
