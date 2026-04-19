@@ -1,6 +1,6 @@
 obj-m += fscryptext4.o
 
-fscryptext4-objs := cryptext4.o file.o
+fscryptext4-objs := cryptext4.o file.o inode.o aops.o
 
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)

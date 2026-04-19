@@ -24,6 +24,7 @@
 #include <linux/splice.h>
 #include <linux/atomic.h>
 #include "disk_format.h"
+#include "cryptext4.h"
 #include "file.h"
 
 /* ====================== Stage 2: 内存文件模拟结构 ====================== */
@@ -37,23 +38,6 @@ struct cryptext4_file_data {
 };
 
 static LIST_HEAD(cryptext4_files);   // 全局内存文件链表（根目录下所有文件）
-
-
-/* global variables */
-static atomic_t cryptext4_inode_count = ATOMIC_INIT(2);
-
-/* =============== Superblock information ============== */
-struct cryptext4_sb_info {
-    struct super_block *sb;
-    struct cryptext4_super_block *raw_sb;   /* raw superblock from disk */
-    void *private;                          /* reserved for encryption keys, etc. */
-
-    /* Stage 3 */
-    unsigned long *inode_bitmap; /* Bitmap for inode allocation */
-    unsigned long *block_bitmap; /* Bitmap for block allocation */
-    uint32_t inode_table_start_block; /* Starting block of inode table */
-};
-
 
 /* ====================== 前向声明 ====================== */
 static int cryptext4_create(struct user_namespace *mnt_userns,
@@ -106,6 +90,7 @@ static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 {
     struct cryptext4_file_data *file_data;
     loff_t pos = ctx->pos;
+    unsigned int d_type;
     int i = 0;
 
     pr_info("cryptext4: iterate called, pos = %lld\n", ctx->pos);
@@ -125,7 +110,7 @@ static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
             continue; /* Skip until we reach the current position */
         }
 
-        unsigned int d_type = S_ISDIR(file_data->mode) ? DT_DIR : DT_REG;
+        d_type = S_ISDIR(file_data->mode) ? DT_DIR : DT_REG;
 
         if(!dir_emit(ctx, file_data->name, strlen(file_data->name), file_data->ino, d_type)) {
             return 0; /* No more space in the buffer */
@@ -139,24 +124,62 @@ static int cryptext4_iterate(struct file *filp, struct dir_context *ctx)
 struct inode *cryptext4_iget(struct super_block *sb, ino_t ino)
 {
     struct inode *inode;
+    struct cryptext4_inode_info *ci;
+    struct cryptext4_inode *disk_inode;
+    struct buffer_head *bh;
 
     inode = iget_locked(sb, ino);
     if (!inode)
         return ERR_PTR(-ENOMEM);
 
     if(!(inode->i_state & I_NEW)) {
-        return inode; /* Already exists, return it */
+        return inode; /* Already exists, return it */   
     }
 
+    bh = cryptext4_read_inode_bitmap_or_table(sb, ino, &disk_inode);
+    if (IS_ERR(bh)) {
+        pr_err("cryptext4: failed to read inode %lu from disk\n", ino);
+        return ERR_CAST(bh);
+    }
+    
+    ci = CRYPTEXT4_I(inode);
+
+    /* Step 4: from disk inode copy to VFS inode */
     inode->i_ino = ino;
     inode->i_sb = sb;
-    inode->i_mode = S_IFREG | 0644; /* Regular file with default permissions */
-    inode->i_op = &cryptext4_file_inode_ops;
-    inode->i_fop = &cryptext4_file_ops;
-    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
-    set_nlink(inode, 1); /* Default link count */
-    unlock_new_inode(inode);
 
+    inode->i_mode = le32_to_cpu(disk_inode->i_mode);
+    i_uid_write(inode, le32_to_cpu(disk_inode->i_uid));
+    i_gid_write(inode, le32_to_cpu(disk_inode->i_gid));
+
+    inode->i_size   = le64_to_cpu(disk_inode->i_size);
+    inode->i_blocks = le64_to_cpu(disk_inode->i_blocks);
+
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+    
+    set_nlink(inode, le16_to_cpu(disk_inode->i_links_count));
+
+    /* Step 5: copy private data structures to cryptext4_inode_info */
+    ci->i_flags = le32_to_cpu(disk_inode->i_flags);
+    memcpy(ci->i_block, disk_inode->i_block, sizeof(ci->i_block));
+
+    /* Step 6: set up inode operations */
+    if (S_ISDIR(inode->i_mode)) {
+        inode->i_op  = &cryptext4_dir_inode_ops;
+        inode->i_fop = &cryptext4_dir_ops;
+        inode->i_mapping->a_ops = &cryptext4_aops; /* Address space operations for directory (if needed) */
+        inode->i_blkbits = PAGE_SHIFT;
+    } else if (S_ISREG(inode->i_mode)) {
+        inode->i_op  = &cryptext4_file_inode_ops;
+        inode->i_fop = &cryptext4_file_ops;
+    } else {
+        pr_err("cryptext4: unsupported file type for inode %lu\n", ino);
+        brelse(bh);
+        return ERR_PTR(-EINVAL);
+    }
+
+    brelse(bh);
+    unlock_new_inode(inode);
     return inode;
 }
 
@@ -202,7 +225,7 @@ static struct dentry *cryptext4_lookup(struct inode *dir,
 
     inode = cryptext4_iget(dir->i_sb, ino); // 从磁盘读取 inode 并创建 VFS inode
     if (IS_ERR(inode)) {
-        pr_err("cryptext4: iget error %ld for inode %u\n", PTR_ERR(inode), ino);
+        pr_err("cryptext4: iget error %ld for inode %lu\n", PTR_ERR(inode), ino);
         return ERR_CAST(inode); // 返回错误指针
     }
 
@@ -215,7 +238,6 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
                             umode_t mode, bool excl)
 {
     struct inode *inode;
-    struct cryptext4_file_data *file_data = NULL;
     struct cryptext4_sb_info *sbi = dir->i_sb->s_fs_info;
     uint32_t ino = 0;
     int bit;
