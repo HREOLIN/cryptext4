@@ -54,7 +54,12 @@ static void print_block_hex(const char *buf, size_t size);
 static const struct inode_operations cryptext4_dir_inode_ops;
 static const struct file_operations cryptext4_dir_ops;
 
-
+static void cryptext4_init_inode(struct inode *inode)
+{
+    inode->i_blkbits = inode->i_sb->s_blocksize_bits;
+    inode->i_mapping->a_ops = &cryptext4_aops;
+    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
+}
 
 /* destroy_inode 期望返回 void，而 generic_delete_inode 返回 int */
 static void cryptext4_destroy_inode(struct inode *inode)
@@ -168,7 +173,6 @@ struct inode *cryptext4_iget(struct super_block *sb, ino_t ino)
         inode->i_op  = &cryptext4_dir_inode_ops;
         inode->i_fop = &cryptext4_dir_ops;
         inode->i_mapping->a_ops = &cryptext4_aops; /* Address space operations for directory (if needed) */
-        inode->i_blkbits = PAGE_SHIFT;
     } else if (S_ISREG(inode->i_mode)) {
         inode->i_op  = &cryptext4_file_inode_ops;
         inode->i_fop = &cryptext4_file_ops;
@@ -177,6 +181,7 @@ struct inode *cryptext4_iget(struct super_block *sb, ino_t ino)
         brelse(bh);
         return ERR_PTR(-EINVAL);
     }
+    cryptext4_init_inode(inode);
 
     brelse(bh);
     unlock_new_inode(inode);
@@ -274,12 +279,13 @@ static int cryptext4_create(struct user_namespace *mnt_userns,
     inode->i_mode = mode | S_IFREG;
     inode->i_uid = current_fsuid();
     inode->i_gid = current_fsgid();
-    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
     inode->i_size = 0;
 
     /* 使用内核简单文件操作（Stage 3 暂时） */
     inode->i_op  = &cryptext4_file_inode_ops;
     inode->i_fop = &cryptext4_file_ops;
+
+    cryptext4_init_inode(inode); /* 初始化 inode 的通用字段 */
 
     insert_inode_locked(inode);
 
@@ -340,10 +346,11 @@ static int cryptext4_mkdir(struct user_namespace *mnt_userns,
     inode->i_mode = mode | S_IFDIR;
     inode->i_uid = current_fsuid();
     inode->i_gid = current_fsgid();
-    inode->i_atime = inode->i_mtime = inode->i_ctime = current_time(inode);
 
     inode->i_op = &cryptext4_dir_inode_ops;
     inode->i_fop = &cryptext4_dir_ops;
+
+    cryptext4_init_inode(inode);
 
     d_instantiate(dentry, inode);
     mark_inode_dirty(inode);
@@ -537,9 +544,10 @@ static int cryptext4_fill_super(struct super_block *sb, void *data, int silent)
 
     root->i_ino = 1; 
     root->i_mode = S_IFDIR | 0755; /* Directory with 755 permissions */
-    root->i_atime = root->i_mtime = root->i_ctime = current_time(root);
     root->i_op = &cryptext4_dir_inode_ops;
     root->i_fop = &cryptext4_dir_ops;
+
+    cryptext4_init_inode(root);
 
     sb->s_root = d_make_root(root);
     if (!sb->s_root) {
